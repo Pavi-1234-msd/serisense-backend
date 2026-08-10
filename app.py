@@ -10,7 +10,10 @@ app = Flask(__name__)
 CORS(app, origins=['*'])
 
 # Load model once at startup
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model', 'Copy of mulberry_disease_model_finetuned.h5')
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model', 'mulberry_model.h5')
+print(f"Looking for model at: {MODEL_PATH}")
+print(f"Model file exists: {os.path.exists(MODEL_PATH)}")
+print(f"Files in model dir: {os.listdir(os.path.join(os.path.dirname(__file__), 'model'))}")
 model = None
 CLASS_NAMES = ['Disease Free leaves', 'Leaf Rust', 'Leaf spot']
 
