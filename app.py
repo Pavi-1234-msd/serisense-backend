@@ -10,7 +10,7 @@ app = Flask(__name__)
 CORS(app, origins=['*'])
 
 # Load model once at startup
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model', 'mulberry_model.h5')
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model', 'mulberry_model.keras')
 print(f"Looking for model at: {MODEL_PATH}")
 print(f"Model file exists: {os.path.exists(MODEL_PATH)}")
 print(f"Files in model dir: {os.listdir(os.path.join(os.path.dirname(__file__), 'model'))}")
@@ -20,7 +20,7 @@ CLASS_NAMES = ['Disease Free leaves', 'Leaf Rust', 'Leaf spot']
 def load_model():
     global model
     try:
-        model = tf.keras.models.load_model(MODEL_PATH)
+        model = tf.keras.models.load_model(MODEL_PATH, compile=False)
         print(f"✅ Model loaded: {MODEL_PATH}")
     except Exception as e:
         print(f"❌ Model load failed: {e}")
