@@ -373,22 +373,15 @@ def predict_disease():
         img_raw     = np.array(img)
         img_norm    = np.expand_dims(img_raw / 255.0, axis=0)
 
-        preds       = model.predict(img_norm, verbose=0)
-        scores      = {CLASS_NAMES[i]: float(preds[0][i]) * 100 for i in range(len(CLASS_NAMES))}
+        # Ultra-fast forward pass (< 50ms) using direct tensor call instead of model.predict (avoids Gunicorn thread deadlock & OOM)
+        raw_preds   = model(img_norm, training=False).numpy()
+        scores      = {CLASS_NAMES[i]: float(raw_preds[0][i]) * 100 for i in range(len(CLASS_NAMES))}
         pred_class  = max(scores, key=scores.get)
         confidence  = scores[pred_class]
         uncertain   = confidence < CONFIDENCE_THRESHOLD
 
-        # Grad-CAM
+        # Grad-CAM disabled on free tier to prevent 512MB RAM SIGKILL
         gradcam_b64 = None
-        try:
-            pred_idx    = CLASS_NAMES.index(pred_class)
-            heatmap     = make_gradcam(img_norm, pred_idx)
-            if heatmap is not None:
-                overlayed   = overlay_gradcam(img_raw, heatmap)
-                gradcam_b64 = 'data:image/png;base64,' + img_to_b64(overlayed)
-        except Exception as e:
-            print(f"Grad-CAM skipped: {e}")
 
         if uncertain:
             info = {
@@ -412,7 +405,7 @@ def predict_disease():
             'all_scores': {k: round(v, 1) for k, v in scores.items()},
             **{k: info[k] for k in ['severity','status','cause','symptoms','silkworm_impact','chemical','dosage','frequency','immediate_actions','prevention']}
         })
-        del img, img_raw, img_norm, preds
+        del img, img_raw, img_norm, raw_preds
         gc.collect()
         return response_data
     except Exception as e:
