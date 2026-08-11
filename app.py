@@ -1,5 +1,6 @@
 import os
 import json
+import gc
 import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -84,9 +85,11 @@ def make_gradcam(img_norm, pred_index):
         heatmap = conv_out[0] @ pooled[..., tf.newaxis]
         heatmap = tf.squeeze(heatmap)
         heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
-        return heatmap.numpy()
+        res = heatmap.numpy()
+        del grad_model, tape, grads, pooled, conv_out
+        return res
     except Exception as e:
-        print(f"Grad-CAM error: {e}")
+        print(f"Grad-CAM skipped (memory save): {e}")
         return None
 
 def overlay_gradcam(img_uint8, heatmap, alpha=0.4):
@@ -317,6 +320,24 @@ SILKWORM_DISEASES = {
     }
 }
 
+# ── Frontend Symptom ID → Backend Label Mapping ──────────
+# The React frontend sends short IDs (e.g. 'body_swelling'),
+# but SYMPTOM_DISEASE_MAP uses full descriptive labels as keys.
+# This map bridges that gap.
+SYMPTOM_ID_TO_LABEL = {
+    'body_swelling':          'Swollen, shiny, translucent body',
+    'milky_fluid':            'Milky white body fluid',
+    'restless_crawling':      'Restless movement, not settling on leaves',
+    'sluggish_loss_appetite': 'Larvae stop feeding',
+    'black_rectal_protrusion':'Soft, flaccid body',
+    'foul_odor_darkening':    'Foul rotting smell',
+    'chalky_white_mummy':     'White powdery coating on body',
+    'loss_elasticity':        'Body becomes stiff and hard',
+    'black_pebrine_spots':    'Pepper-like dark spots on body',
+    'uneven_hatching_growth': 'Uneven growth within same batch',
+    'microscopic_corpuscles': 'Deformed adult moths'
+}
+
 # ── ROUTES ────────────────────────────────────────────────
 
 @app.route('/')
@@ -382,7 +403,7 @@ def predict_disease():
         else:
             info = DISEASE_KNOWLEDGE[pred_class]
 
-        return jsonify({
+        response_data = jsonify({
             'success': True,
             'predicted_class': pred_class,
             'confidence': round(confidence, 1),
@@ -391,8 +412,12 @@ def predict_disease():
             'all_scores': {k: round(v, 1) for k, v in scores.items()},
             **{k: info[k] for k in ['severity','status','cause','symptoms','silkworm_impact','chemical','dosage','frequency','immediate_actions','prevention']}
         })
+        del img, img_raw, img_norm, preds
+        gc.collect()
+        return response_data
     except Exception as e:
         print(f"❌ PREDICT ERROR: {e}")
+        gc.collect()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/climate-check', methods=['POST'])
@@ -456,8 +481,10 @@ def diagnose_silkworm():
 
         scores = {d: 0 for d in SILKWORM_DISEASES}
         for s in symptoms:
-            if s in SYMPTOM_DISEASE_MAP:
-                for d in SYMPTOM_DISEASE_MAP[s]:
+            # Try direct label match first, then reverse-lookup from frontend ID
+            label = s if s in SYMPTOM_DISEASE_MAP else SYMPTOM_ID_TO_LABEL.get(s, s)
+            if label in SYMPTOM_DISEASE_MAP:
+                for d in SYMPTOM_DISEASE_MAP[label]:
                     if d in scores:
                         scores[d] += 1
 
