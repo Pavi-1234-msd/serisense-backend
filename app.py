@@ -19,6 +19,21 @@ import base64
 app = Flask(__name__)
 CORS(app, origins=['*'])
 
+@app.after_request
+def after_request(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, ngrok-skip-browser-warning'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    return response
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    print(f"[UNHANDLED EXCEPTION] {e}")
+    response = jsonify({'success': False, 'error': str(e)})
+    response.status_code = 500
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
+
 # ── Model Loading ─────────────────────────────────────────
 model = None
 CLASS_NAMES = ['Disease Free leaves', 'Leaf Rust', 'Leaf spot']
