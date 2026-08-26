@@ -28,32 +28,44 @@ def load_model():
     if os.path.exists(model_dir):
         print(f"Model dir contents: {os.listdir(model_dir)}")
     else:
-        print("❌ model/ directory not found!")
+        print("[ERROR] model/ directory not found!")
 
     if os.path.exists(keras_path):
         print(f"Found .keras file: {keras_path}")
         print(f"File size: {os.path.getsize(keras_path) / (1024*1024):.1f} MB")
         try:
             model = tf.keras.models.load_model(keras_path, compile=False)
-            print(f"✅ Model loaded from .keras!")
+            print(f"[OK] Model loaded from .keras!")
             print(f"   Input shape:  {model.input_shape}")
             print(f"   Output shape: {model.output_shape}")
+            _warmup_model()
             return
         except Exception as e:
-            print(f"❌ .keras load failed: {e}")
+            print(f"[ERROR] .keras load failed: {e}")
 
     if os.path.exists(h5_path):
         print(f"Found .h5 file: {h5_path}")
         try:
             model = tf.keras.models.load_model(h5_path, compile=False)
-            print(f"✅ Model loaded from .h5!")
+            print(f"[OK] Model loaded from .h5!")
             print(f"   Input shape:  {model.input_shape}")
             print(f"   Output shape: {model.output_shape}")
+            _warmup_model()
             return
         except Exception as e:
-            print(f"❌ .h5 load failed: {e}")
+            print(f"[ERROR] .h5 load failed: {e}")
 
-    print("❌ No model file found or all load attempts failed")
+    print("[ERROR] No model file found or all load attempts failed")
+
+def _warmup_model():
+    global model
+    if model is not None:
+        try:
+            dummy = np.zeros((1, 224, 224, 3), dtype=np.float32)
+            _ = model(dummy, training=False)
+            print("[OK] Model execution graph pre-warmed successfully!")
+        except Exception as e:
+            print(f"[WARN] Model warm-up skipped: {e}")
 
 load_model()
 
@@ -109,7 +121,7 @@ def img_to_b64(img_rgb):
 DISEASE_KNOWLEDGE = {
     'Disease Free leaves': {
         'severity': 'None',
-        'status': '✅ HEALTHY LEAF',
+        'status': 'HEALTHY LEAF',
         'cause': 'No pathogen detected.',
         'symptoms': [
             'Uniform bright green colour across entire leaf',
@@ -136,7 +148,7 @@ DISEASE_KNOWLEDGE = {
     },
     'Leaf Rust': {
         'severity': 'Moderate',
-        'status': '⚠️ LEAF RUST DETECTED',
+        'status': 'LEAF RUST DETECTED',
         'cause': 'Fungal pathogen: Cerotelium fici (Obligate parasite). Spreads through wind-borne spores in warm, humid conditions.',
         'symptoms': [
             'Small orange-yellow pustules (uredia) on underside of leaf',
@@ -165,7 +177,7 @@ DISEASE_KNOWLEDGE = {
     },
     'Leaf spot': {
         'severity': 'High',
-        'status': '🔴 LEAF SPOT DETECTED',
+        'status': 'LEAF SPOT DETECTED',
         'cause': 'Fungal pathogens: Pseudocercospora mori or Cercospora moricola. Thrives in warm humid environments (20–28°C, >85% RH).',
         'symptoms': [
             'Circular to irregular brown/grey spots with dark brown margins',
@@ -385,7 +397,7 @@ def predict_disease():
 
         if uncertain:
             info = {
-                'severity': 'Unknown', 'status': '⚠️ Uncertain — please retake photo',
+                'severity': 'Unknown', 'status': 'Uncertain - please retake photo',
                 'cause': 'Confidence below 60%. Try better lighting, steady camera, single leaf in frame.',
                 'symptoms': ['Confidence below safe threshold'],
                 'silkworm_impact': 'Do not act on this result. Retake photo in good natural light.',
@@ -409,7 +421,7 @@ def predict_disease():
         gc.collect()
         return response_data
     except Exception as e:
-        print(f"❌ PREDICT ERROR: {e}")
+        print(f"[ERROR] PREDICT ERROR: {e}")
         gc.collect()
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -463,7 +475,7 @@ def climate_check():
             'consequences': consequences, 'corrections': corrections
         })
     except Exception as e:
-        print(f"❌ CLIMATE ERROR: {e}")
+        print(f"[ERROR] CLIMATE ERROR: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/diagnose-silkworm', methods=['POST'])
@@ -509,7 +521,7 @@ def diagnose_silkworm():
             'other_matches': others
         })
     except Exception as e:
-        print(f"❌ DIAGNOSE ERROR: {e}")
+        print(f"[ERROR] DIAGNOSE ERROR: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/symptoms-list', methods=['GET'])
