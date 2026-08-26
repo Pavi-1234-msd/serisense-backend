@@ -1,10 +1,12 @@
 import os
-# Senior Dev Fix: Limit TensorFlow to 1 CPU thread & disable GPU to stay well within Render 512MB RAM cap
+# Senior Dev Fix: Limit TensorFlow memory overhead on Render 512MB RAM cap
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['MALLOC_TRIM_THRESHOLD_'] = '100000'
 
 import json
 import gc
@@ -85,6 +87,8 @@ def _warmup_model():
         try:
             dummy = np.zeros((1, 224, 224, 3), dtype=np.float32)
             _ = model(dummy, training=False)
+            del dummy
+            gc.collect()
             print("[OK] Model execution graph pre-warmed successfully!")
         except Exception as e:
             print(f"[WARN] Model warm-up skipped: {e}")

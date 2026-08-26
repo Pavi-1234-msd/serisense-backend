@@ -5,10 +5,10 @@ import os
 
 bind = f"0.0.0.0:{os.environ.get('PORT', '5000')}"
 workers = 1
-threads = 2
-worker_class = 'gthread'
+threads = 1
+worker_class = 'sync'
 timeout = 120
-keepalive = 5
-max_requests = 100
-max_requests_jitter = 10
+keepalive = 2
+max_requests = 50
+max_requests_jitter = 5
 preload_app = False
