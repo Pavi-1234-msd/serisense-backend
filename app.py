@@ -414,8 +414,17 @@ def predict_disease():
         confidence  = scores[pred_class]
         uncertain   = confidence < CONFIDENCE_THRESHOLD
 
-        # Grad-CAM disabled on free tier to prevent 512MB RAM SIGKILL
+        # Generate Grad-CAM explainability heatmap
         gradcam_b64 = None
+        try:
+            pred_index = CLASS_NAMES.index(pred_class)
+            heatmap = make_gradcam(img_norm, pred_index)
+            if heatmap is not None:
+                cam_overlay = overlay_gradcam(img_raw, heatmap)
+                gradcam_b64 = "data:image/png;base64," + img_to_b64(cam_overlay)
+        except Exception as gc_err:
+            print(f"[WARN] Grad-CAM generation skipped: {gc_err}")
+            gradcam_b64 = None
 
         if uncertain:
             info = {
