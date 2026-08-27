@@ -107,9 +107,43 @@ def get_last_conv_layer(m):
     return None
 
 def make_gradcam(img_norm, pred_index):
-    # Disabled on Render free tier — 26.6MB model uses too much RAM
-    # Grad-CAM causes 502 crash on 512MB instance
-    return None
+    last_conv = get_last_conv_layer(model)
+    if last_conv is None:
+        return None
+    try:
+        # Build grad model
+        grad_model = tf.keras.models.Model(
+            inputs  = model.inputs,
+            outputs = [model.get_layer(last_conv).output, model.output]
+        )
+
+        img_tensor = tf.cast(img_norm, tf.float32)
+
+        with tf.GradientTape() as tape:
+            tape.watch(img_tensor)
+            conv_out, preds = grad_model(img_tensor, training=False)
+            class_channel   = preds[:, pred_index]
+
+        grads    = tape.gradient(class_channel, conv_out)
+        pooled   = tf.reduce_mean(grads, axis=(0, 1, 2))
+        heatmap  = conv_out[0] @ pooled[..., tf.newaxis]
+        heatmap  = tf.squeeze(heatmap)
+        heatmap  = tf.maximum(heatmap, 0)
+        max_val  = tf.math.reduce_max(heatmap)
+        heatmap  = heatmap / (max_val + 1e-8)
+        result   = heatmap.numpy()
+
+        # Cleanup immediately
+        del grad_model, img_tensor, conv_out, preds
+        del grads, pooled, heatmap
+        gc.collect()
+
+        return result
+
+    except Exception as e:
+        print(f"[WARN] Grad-CAM error: {e}")
+        gc.collect()
+        return None
 
 def overlay_gradcam(img_uint8, heatmap, alpha=0.4):
     img     = cv2.resize(img_uint8.astype('uint8'), (224, 224))
@@ -391,14 +425,14 @@ def predict_disease():
         # Read image bytes into memory first
         file_bytes = file.read()
         import io
-        img      = Image.open(io.BytesIO(file_bytes)).convert('RGB').resize((224, 224))
-        img_raw  = np.array(img, dtype=np.float32)
-        img_norm = np.expand_dims(img_raw / 255.0, axis=0).astype(np.float32)
+        img       = Image.open(io.BytesIO(file_bytes)).convert('RGB').resize((224, 224))
+        img_raw   = np.array(img, dtype=np.float32)
+        img_copy  = img_raw.copy()   # ← keep for Grad-CAM overlay
+        img_norm  = np.expand_dims(img_raw / 255.0, axis=0).astype(np.float32)
 
-        # Direct tensor call — fastest, lowest memory
         input_tensor = tf.constant(img_norm)
         raw_preds    = model(input_tensor, training=False).numpy()
-        del input_tensor, img_norm, img_raw, img
+        del input_tensor, img, img_raw
         gc.collect()
 
         scores     = {CLASS_NAMES[i]: float(raw_preds[0][i]) * 100
@@ -452,6 +486,26 @@ def predict_disease():
         print(f"[ERROR] PREDICT ERROR: {e}")
         gc.collect()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+    # ── Grad-CAM (memory safe) ──────────────────────────
+    gradcam_b64 = None
+    try:
+        pred_idx    = CLASS_NAMES.index(pred_class)
+        heatmap     = make_gradcam(img_norm, pred_idx)
+        if heatmap is not None:
+            overlay     = overlay_gradcam(
+                            np.array(img_copy, dtype=np.uint8),
+                            heatmap
+                        )
+            gradcam_b64 = "data:image/png;base64," + img_to_b64(overlay)
+            del heatmap, overlay
+            gc.collect()
+            print("[OK] Grad-CAM generated successfully!")
+        else:
+            print("[WARN] Grad-CAM returned None")
+    except Exception as gc_err:
+        print(f"[WARN] Grad-CAM skipped: {gc_err}")
+        gradcam_b64 = None
 
 @app.route('/api/climate-check', methods=['POST'])
 def climate_check():
