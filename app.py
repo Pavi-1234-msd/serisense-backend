@@ -462,18 +462,6 @@ def predict_disease():
         else:
             info = DISEASE_KNOWLEDGE[pred_class]
 
-        # Generate Grad-CAM Heatmap Overlay
-        gradcam_b64 = None
-        try:
-            pred_idx = CLASS_NAMES.index(pred_class)
-            heatmap  = make_gradcam(img_norm, pred_idx)
-            if heatmap is not None:
-                overlayed   = overlay_gradcam(img_copy, heatmap)
-                gradcam_b64 = 'data:image/png;base64,' + img_to_b64(overlayed)
-                del overlayed, heatmap
-        except Exception as e:
-            print(f"[WARN] Grad-CAM skipped: {e}")
-
         del img_copy, img_norm
         gc.collect()
 
@@ -482,7 +470,7 @@ def predict_disease():
             'predicted_class'  : pred_class,
             'confidence'       : round(confidence, 1),
             'is_uncertain'     : uncertain,
-            'gradcam_image'    : gradcam_b64,
+            'gradcam_image'    : None,
             'all_scores'       : {k: round(v, 1) for k, v in scores.items()},
             'severity'         : info['severity'],
             'status'           : info['status'],
