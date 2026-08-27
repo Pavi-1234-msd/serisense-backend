@@ -407,32 +407,37 @@ def predict_disease():
         if not file:
             return jsonify({'success': False, 'error': 'No image uploaded'}), 400
 
-        img         = Image.open(file.stream).convert('RGB').resize((224, 224))
-        img_raw     = np.array(img)
-        img_norm    = np.expand_dims(img_raw / 255.0, axis=0)
+        # Load and preprocess image
+        img      = Image.open(file.stream).convert('RGB').resize((224, 224))
+        img_raw  = np.array(img, dtype=np.float32)
+        img_norm = np.expand_dims(img_raw / 255.0, axis=0)
 
-        # Ultra-fast forward pass (< 50ms) using direct tensor call instead of model.predict (avoids Gunicorn thread deadlock & OOM)
-        raw_preds   = model(img_norm, training=False).numpy()
-        scores      = {CLASS_NAMES[i]: float(raw_preds[0][i]) * 100 for i in range(len(CLASS_NAMES))}
-        pred_class  = max(scores, key=scores.get)
-        confidence  = scores[pred_class]
-        uncertain   = confidence < CONFIDENCE_THRESHOLD
+        # Run prediction
+        input_tensor = tf.constant(img_norm, dtype=tf.float32)
+        raw_preds    = model(input_tensor, training=False).numpy()
 
-        # Generate Grad-CAM explainability heatmap
+        scores     = {CLASS_NAMES[i]: float(raw_preds[0][i]) * 100 for i in range(len(CLASS_NAMES))}
+        pred_class = max(scores, key=scores.get)
+        confidence = scores[pred_class]
+        uncertain  = confidence < CONFIDENCE_THRESHOLD
+
+        # Grad-CAM — skip if low memory risk
         gradcam_b64 = None
         try:
-            pred_index = CLASS_NAMES.index(pred_class)
-            heatmap = make_gradcam(img_norm, pred_index)
+            pred_index  = CLASS_NAMES.index(pred_class)
+            heatmap     = make_gradcam(img_norm, pred_index)
             if heatmap is not None:
-                cam_overlay = overlay_gradcam(img_raw, heatmap)
+                cam_overlay = overlay_gradcam(img_raw.astype(np.uint8), heatmap)
                 gradcam_b64 = "data:image/png;base64," + img_to_b64(cam_overlay)
+                del heatmap, cam_overlay
         except Exception as gc_err:
-            print(f"[WARN] Grad-CAM generation skipped: {gc_err}")
+            print(f"[WARN] Grad-CAM skipped: {gc_err}")
             gradcam_b64 = None
 
         if uncertain:
             info = {
-                'severity': 'Unknown', 'status': 'Uncertain - please retake photo',
+                'severity': 'Unknown',
+                'status': 'Uncertain - please retake photo',
                 'cause': 'Confidence below 60%. Try better lighting, steady camera, single leaf in frame.',
                 'symptoms': ['Confidence below safe threshold'],
                 'silkworm_impact': 'Do not act on this result. Retake photo in good natural light.',
@@ -443,18 +448,30 @@ def predict_disease():
         else:
             info = DISEASE_KNOWLEDGE[pred_class]
 
-        response_data = jsonify({
-            'success': True,
-            'predicted_class': pred_class,
-            'confidence': round(confidence, 1),
-            'is_uncertain': uncertain,
-            'gradcam_image': gradcam_b64,
-            'all_scores': {k: round(v, 1) for k, v in scores.items()},
-            **{k: info[k] for k in ['severity','status','cause','symptoms','silkworm_impact','chemical','dosage','frequency','immediate_actions','prevention']}
+        result = jsonify({
+            'success'         : True,
+            'predicted_class' : pred_class,
+            'confidence'      : round(confidence, 1),
+            'is_uncertain'    : uncertain,
+            'gradcam_image'   : gradcam_b64,
+            'all_scores'      : {k: round(v, 1) for k, v in scores.items()},
+            'severity'        : info['severity'],
+            'status'          : info['status'],
+            'cause'           : info['cause'],
+            'symptoms'        : info['symptoms'],
+            'silkworm_impact' : info['silkworm_impact'],
+            'chemical'        : info['chemical'],
+            'dosage'          : info['dosage'],
+            'frequency'       : info['frequency'],
+            'immediate_actions': info['immediate_actions'],
+            'prevention'      : info['prevention']
         })
-        del img, img_raw, img_norm, raw_preds
+
+        # Cleanup memory
+        del img, img_raw, img_norm, input_tensor, raw_preds
         gc.collect()
-        return response_data
+        return result
+
     except Exception as e:
         print(f"[ERROR] PREDICT ERROR: {e}")
         gc.collect()
