@@ -462,13 +462,27 @@ def predict_disease():
         else:
             info = DISEASE_KNOWLEDGE[pred_class]
 
+        # Generate Grad-CAM Heatmap Overlay
+        gradcam_b64 = None
+        try:
+            pred_idx = CLASS_NAMES.index(pred_class)
+            heatmap  = make_gradcam(img_norm, pred_idx)
+            if heatmap is not None:
+                overlayed   = overlay_gradcam(img_copy, heatmap)
+                gradcam_b64 = 'data:image/png;base64,' + img_to_b64(overlayed)
+                del overlayed, heatmap
+        except Exception as e:
+            print(f"[WARN] Grad-CAM skipped: {e}")
+
+        del img_copy, img_norm
         gc.collect()
+
         return jsonify({
             'success'          : True,
             'predicted_class'  : pred_class,
             'confidence'       : round(confidence, 1),
             'is_uncertain'     : uncertain,
-            'gradcam_image'    : None,
+            'gradcam_image'    : gradcam_b64,
             'all_scores'       : {k: round(v, 1) for k, v in scores.items()},
             'severity'         : info['severity'],
             'status'           : info['status'],
@@ -486,26 +500,6 @@ def predict_disease():
         print(f"[ERROR] PREDICT ERROR: {e}")
         gc.collect()
         return jsonify({'success': False, 'error': str(e)}), 500
-
-    # ── Grad-CAM (memory safe) ──────────────────────────
-    gradcam_b64 = None
-    try:
-        pred_idx    = CLASS_NAMES.index(pred_class)
-        heatmap     = make_gradcam(img_norm, pred_idx)
-        if heatmap is not None:
-            overlay     = overlay_gradcam(
-                            np.array(img_copy, dtype=np.uint8),
-                            heatmap
-                        )
-            gradcam_b64 = "data:image/png;base64," + img_to_b64(overlay)
-            del heatmap, overlay
-            gc.collect()
-            print("[OK] Grad-CAM generated successfully!")
-        else:
-            print("[WARN] Grad-CAM returned None")
-    except Exception as gc_err:
-        print(f"[WARN] Grad-CAM skipped: {gc_err}")
-        gradcam_b64 = None
 
 @app.route('/api/climate-check', methods=['POST'])
 def climate_check():
