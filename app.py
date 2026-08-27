@@ -107,28 +107,9 @@ def get_last_conv_layer(m):
     return None
 
 def make_gradcam(img_norm, pred_index):
-    last_conv = get_last_conv_layer(model)
-    if last_conv is None:
-        return None
-    try:
-        grad_model = tf.keras.models.Model(
-            [model.inputs],
-            [model.get_layer(last_conv).output, model.output]
-        )
-        with tf.GradientTape() as tape:
-            conv_out, preds = grad_model(img_norm)
-            class_channel = preds[:, pred_index]
-        grads = tape.gradient(class_channel, conv_out)
-        pooled = tf.reduce_mean(grads, axis=(0, 1, 2))
-        heatmap = conv_out[0] @ pooled[..., tf.newaxis]
-        heatmap = tf.squeeze(heatmap)
-        heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
-        res = heatmap.numpy()
-        del grad_model, tape, grads, pooled, conv_out
-        return res
-    except Exception as e:
-        print(f"Grad-CAM skipped (memory save): {e}")
-        return None
+    # Disabled on Render free tier — 26.6MB model uses too much RAM
+    # Grad-CAM causes 502 crash on 512MB instance
+    return None
 
 def overlay_gradcam(img_uint8, heatmap, alpha=0.4):
     img     = cv2.resize(img_uint8.astype('uint8'), (224, 224))
@@ -407,32 +388,24 @@ def predict_disease():
         if not file:
             return jsonify({'success': False, 'error': 'No image uploaded'}), 400
 
-        # Load and preprocess image
-        img      = Image.open(file.stream).convert('RGB').resize((224, 224))
+        # Read image bytes into memory first
+        file_bytes = file.read()
+        import io
+        img      = Image.open(io.BytesIO(file_bytes)).convert('RGB').resize((224, 224))
         img_raw  = np.array(img, dtype=np.float32)
-        img_norm = np.expand_dims(img_raw / 255.0, axis=0)
+        img_norm = np.expand_dims(img_raw / 255.0, axis=0).astype(np.float32)
 
-        # Run prediction
-        input_tensor = tf.constant(img_norm, dtype=tf.float32)
+        # Direct tensor call — fastest, lowest memory
+        input_tensor = tf.constant(img_norm)
         raw_preds    = model(input_tensor, training=False).numpy()
+        del input_tensor, img_norm, img_raw, img
+        gc.collect()
 
-        scores     = {CLASS_NAMES[i]: float(raw_preds[0][i]) * 100 for i in range(len(CLASS_NAMES))}
+        scores     = {CLASS_NAMES[i]: float(raw_preds[0][i]) * 100
+                      for i in range(len(CLASS_NAMES))}
         pred_class = max(scores, key=scores.get)
         confidence = scores[pred_class]
         uncertain  = confidence < CONFIDENCE_THRESHOLD
-
-        # Grad-CAM — skip if low memory risk
-        gradcam_b64 = None
-        try:
-            pred_index  = CLASS_NAMES.index(pred_class)
-            heatmap     = make_gradcam(img_norm, pred_index)
-            if heatmap is not None:
-                cam_overlay = overlay_gradcam(img_raw.astype(np.uint8), heatmap)
-                gradcam_b64 = "data:image/png;base64," + img_to_b64(cam_overlay)
-                del heatmap, cam_overlay
-        except Exception as gc_err:
-            print(f"[WARN] Grad-CAM skipped: {gc_err}")
-            gradcam_b64 = None
 
         if uncertain:
             info = {
@@ -442,35 +415,38 @@ def predict_disease():
                 'symptoms': ['Confidence below safe threshold'],
                 'silkworm_impact': 'Do not act on this result. Retake photo in good natural light.',
                 'chemical': 'N/A', 'dosage': 'N/A', 'frequency': 'N/A',
-                'immediate_actions': ['Retake photo in natural daylight', 'Fill frame with a single leaf', 'Avoid shadows and blur'],
-                'prevention': ['Use daylight, not artificial light', 'Hold camera steady']
+                'immediate_actions': [
+                    'Retake photo in natural daylight',
+                    'Fill frame with a single leaf',
+                    'Avoid shadows and blur'
+                ],
+                'prevention': [
+                    'Use daylight, not artificial light',
+                    'Hold camera steady'
+                ]
             }
         else:
             info = DISEASE_KNOWLEDGE[pred_class]
 
-        result = jsonify({
-            'success'         : True,
-            'predicted_class' : pred_class,
-            'confidence'      : round(confidence, 1),
-            'is_uncertain'    : uncertain,
-            'gradcam_image'   : gradcam_b64,
-            'all_scores'      : {k: round(v, 1) for k, v in scores.items()},
-            'severity'        : info['severity'],
-            'status'          : info['status'],
-            'cause'           : info['cause'],
-            'symptoms'        : info['symptoms'],
-            'silkworm_impact' : info['silkworm_impact'],
-            'chemical'        : info['chemical'],
-            'dosage'          : info['dosage'],
-            'frequency'       : info['frequency'],
-            'immediate_actions': info['immediate_actions'],
-            'prevention'      : info['prevention']
-        })
-
-        # Cleanup memory
-        del img, img_raw, img_norm, input_tensor, raw_preds
         gc.collect()
-        return result
+        return jsonify({
+            'success'          : True,
+            'predicted_class'  : pred_class,
+            'confidence'       : round(confidence, 1),
+            'is_uncertain'     : uncertain,
+            'gradcam_image'    : None,
+            'all_scores'       : {k: round(v, 1) for k, v in scores.items()},
+            'severity'         : info['severity'],
+            'status'           : info['status'],
+            'cause'            : info['cause'],
+            'symptoms'         : info['symptoms'],
+            'silkworm_impact'  : info['silkworm_impact'],
+            'chemical'         : info['chemical'],
+            'dosage'           : info['dosage'],
+            'frequency'        : info['frequency'],
+            'immediate_actions': info['immediate_actions'],
+            'prevention'       : info['prevention']
+        })
 
     except Exception as e:
         print(f"[ERROR] PREDICT ERROR: {e}")
