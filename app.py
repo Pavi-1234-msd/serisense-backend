@@ -9,6 +9,21 @@ from flask_cors import CORS
 from PIL import Image
 from werkzeug.security import generate_password_hash, check_password_hash
 
+try:
+    import mysql.connector
+    MYSQL_DRIVER = 'mysql.connector'
+    MYSQL_AVAILABLE = True
+except ImportError:
+    try:
+        import pymysql
+        pymysql.install_as_MySQLdb()
+        import MySQLdb as mysql
+        MYSQL_DRIVER = 'pymysql'
+        MYSQL_AVAILABLE = True
+    except ImportError:
+        MYSQL_AVAILABLE = False
+        MYSQL_DRIVER = None
+
 # ── Use LiteRT / TFLite runtime instead of full TensorFlow ─────────
 # TFLite = ~80MB RAM vs TensorFlow = ~450MB RAM
 try:
@@ -333,34 +348,80 @@ def run_inference(img_array):
             tf.constant(img_array), training=False
         ).numpy()
 
-# ── Database Initialization ─────────────────────────────
+# ── Database Configuration (MySQL + SQLite Fallback) ──────
 DB_PATH = os.path.join(os.path.dirname(__file__), 'users.db')
+MYSQL_HOST = os.environ.get('MYSQL_HOST', 'localhost')
+MYSQL_USER = os.environ.get('MYSQL_USER', 'root')
+MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD', '')
+MYSQL_DB = os.environ.get('MYSQL_DB', 'serisense_db')
+MYSQL_PORT = int(os.environ.get('MYSQL_PORT', 3306))
 
 def get_db():
+    if MYSQL_AVAILABLE:
+        try:
+            # Ensure database exists
+            root_conn = mysql.connector.connect(
+                host=MYSQL_HOST, user=MYSQL_USER,
+                password=MYSQL_PASSWORD, port=MYSQL_PORT
+            )
+            root_cursor = root_conn.cursor()
+            root_cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{MYSQL_DB}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
+            root_cursor.close()
+            root_conn.close()
+
+            conn = mysql.connector.connect(
+                host=MYSQL_HOST, user=MYSQL_USER,
+                password=MYSQL_PASSWORD, database=MYSQL_DB,
+                port=MYSQL_PORT
+            )
+            return conn, 'mysql'
+        except Exception as e:
+            print(f"[WARN] Could not connect to MySQL ({e}). Using SQLite fallback.")
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    return conn, 'sqlite'
 
 def init_db():
-    conn = get_db()
+    conn, db_type = get_db()
     cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            uid TEXT UNIQUE,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT,
-            full_name TEXT,
-            phone TEXT,
-            state TEXT,
-            district TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
-    print("[OK] SQLite User database initialized!")
+    if db_type == 'mysql':
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                uid VARCHAR(255) UNIQUE,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password_hash TEXT,
+                full_name VARCHAR(255),
+                phone VARCHAR(50),
+                state VARCHAR(100),
+                district VARCHAR(100),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        ''')
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print(f"[OK] MySQL Database `{MYSQL_DB}` initialized successfully!")
+    else:
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uid TEXT UNIQUE,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT,
+                full_name TEXT,
+                phone TEXT,
+                state TEXT,
+                district TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        print("[OK] SQLite User database initialized!")
 
 init_db()
 
@@ -574,27 +635,41 @@ def auth_register():
             return jsonify({'success': False, 'error': 'Email and password are required'}), 400
 
         password_hash = generate_password_hash(password)
-        conn = get_db()
+        conn, db_type = get_db()
         cursor = conn.cursor()
 
-        cursor.execute('''
-            INSERT INTO users (uid, email, password_hash, full_name, phone, state, district, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(email) DO UPDATE SET
-                password_hash = excluded.password_hash,
-                full_name = COALESCE(NULLIF(excluded.full_name, ''), users.full_name),
-                phone = COALESCE(NULLIF(excluded.phone, ''), users.phone),
-                state = COALESCE(NULLIF(excluded.state, ''), users.state),
-                district = COALESCE(NULLIF(excluded.district, ''), users.district),
-                updated_at = CURRENT_TIMESTAMP
-        ''', (uid, email, password_hash, full_name, phone, state, district))
+        if db_type == 'mysql':
+            cursor.execute('''
+                INSERT INTO users (uid, email, password_hash, full_name, phone, state, district)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    password_hash = VALUES(password_hash),
+                    full_name = COALESCE(NULLIF(VALUES(full_name), ''), full_name),
+                    phone = COALESCE(NULLIF(VALUES(phone), ''), phone),
+                    state = COALESCE(NULLIF(VALUES(state), ''), state),
+                    district = COALESCE(NULLIF(VALUES(district), ''), district);
+            ''', (uid, email, password_hash, full_name, phone, state, district))
+        else:
+            cursor.execute('''
+                INSERT INTO users (uid, email, password_hash, full_name, phone, state, district, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(email) DO UPDATE SET
+                    password_hash = excluded.password_hash,
+                    full_name = COALESCE(NULLIF(excluded.full_name, ''), users.full_name),
+                    phone = COALESCE(NULLIF(excluded.phone, ''), users.phone),
+                    state = COALESCE(NULLIF(excluded.state, ''), users.state),
+                    district = COALESCE(NULLIF(excluded.district, ''), users.district),
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (uid, email, password_hash, full_name, phone, state, district))
 
         conn.commit()
+        cursor.close() if db_type == 'mysql' else None
         conn.close()
 
-        print(f"[OK] Registered/Updated backend user session: {email}")
+        print(f"[OK] Registered/Updated user session in {db_type}: {email}")
         return jsonify({
             'success': True,
+            'db_engine': db_type,
             'message': 'User registered successfully in backend',
             'user': {
                 'email': email,
@@ -747,72 +822,9 @@ def auth_update_profile():
                 'district': user_row['district']
             }
         })
-@app.route('/users-view')
-def users_view_html():
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute('SELECT id, uid, email, password_hash, full_name, phone, state, district, created_at FROM users ORDER BY id DESC')
-        users = cursor.fetchall()
-        conn.close()
-
-        rows_html = ""
-        for u in users:
-            rows_html += f"""
-            <tr style="border-bottom: 1px solid #e2e8f0;">
-                <td style="padding: 12px; font-weight: bold;">{u['id']}</td>
-                <td style="padding: 12px; color: #2b6cb0; font-weight: 600;">{u['full_name'] or 'N/A'}</td>
-                <td style="padding: 12px;">{u['email']}</td>
-                <td style="padding: 12px;">{u['phone'] or 'N/A'}</td>
-                <td style="padding: 12px;">{u['state'] or 'N/A'}</td>
-                <td style="padding: 12px;">{u['district'] or 'N/A'}</td>
-                <td style="padding: 12px; font-size: 11px; color: #718096; max-width: 140px; word-break: break-all;">{u['password_hash'] or 'N/A'}</td>
-                <td style="padding: 12px; font-size: 12px; color: #4a5568;">{u['created_at']}</td>
-            </tr>
-            """
-
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>SeriSense Customer Database</title>
-            <style>
-                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f7fafc; margin: 0; padding: 30px; color: #2d3748; }}
-                .card {{ background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); padding: 24px; max-width: 1100px; margin: 0 auto; }}
-                h1 {{ color: #2b6cb0; margin-top: 0; display: flex; align-items: center; gap: 10px; }}
-                table {{ width: 100%; border-collapse: collapse; margin-top: 16px; text-align: left; }}
-                th {{ background: #edf2f7; padding: 12px; font-size: 13px; text-transform: uppercase; color: #4a5568; letter-spacing: 0.5px; }}
-                .badge {{ background: #c6f6d5; color: #22543d; padding: 4px 8px; border-radius: 9999px; font-size: 12px; font-weight: bold; }}
-            </style>
-        </head>
-        <body>
-            <div class="card">
-                <h1>👥 SeriSense Customer Database <span class="badge">{len(users)} Total Customers</span></h1>
-                <p style="color: #718096;">Live view of customer login details stored in SQLite database (`users.db`).</p>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Full Name</th>
-                            <th>Email</th>
-                            <th>Phone</th>
-                            <th>State</th>
-                            <th>District</th>
-                            <th>Password Hash</th>
-                            <th>Registered At</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {rows_html if rows_html else '<tr><td colspan="8" style="padding: 24px; text-align: center; color: #a0aec0;">No customers registered yet.</td></tr>'}
-                    </tbody>
-                </table>
-            </div>
-        </body>
-        </html>
-        """
-        return html
     except Exception as e:
-        return f"<h3>Error reading users table: {e}</h3>", 500
+        print(f"[ERROR] Profile update failed: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0',
