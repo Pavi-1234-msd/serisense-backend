@@ -2,10 +2,12 @@ import os
 import gc
 import io
 import json
+import sqlite3
 import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # ── Use LiteRT / TFLite runtime instead of full TensorFlow ─────────
 # TFLite = ~80MB RAM vs TensorFlow = ~450MB RAM
@@ -331,17 +333,50 @@ def run_inference(img_array):
             tf.constant(img_array), training=False
         ).numpy()
 
+# ── Database Initialization ─────────────────────────────
+DB_PATH = os.path.join(os.path.dirname(__file__), 'users.db')
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uid TEXT UNIQUE,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT,
+            full_name TEXT,
+            phone TEXT,
+            state TEXT,
+            district TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    print("[OK] SQLite User database initialized!")
+
+init_db()
+
 # ── ROUTES ────────────────────────────────────────────────
 @app.route('/')
 def index():
     return jsonify({
         'app': 'SeriSense AI Backend',
         'status': 'running',
-        'version': '2.0.0',
+        'version': '2.1.0',
         'inference': 'TFLite' if interpreter is not None else 'Keras',
         'endpoints': ['/api/health', '/api/predict-disease',
                       '/api/climate-check', '/api/diagnose-silkworm',
-                      '/api/symptoms-list']
+                      '/api/symptoms-list', '/api/auth/register',
+                      '/api/auth/login', '/api/auth/sync',
+                      '/api/auth/update-profile']
     })
 
 @app.route('/api/health', methods=['GET'])
@@ -521,6 +556,200 @@ def diagnose_silkworm():
 @app.route('/api/symptoms-list', methods=['GET'])
 def symptoms_list():
     return jsonify({'symptoms': list(SYMPTOM_DISEASE_MAP.keys())})
+
+# ── AUTH & USER SESSION ENDPOINTS ─────────────────────────
+@app.route('/api/auth/register', methods=['POST'])
+def auth_register():
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').strip().lower()
+        password = data.get('password') or ''
+        full_name = data.get('full_name') or data.get('name') or ''
+        phone = data.get('phone') or ''
+        state = data.get('state') or ''
+        district = data.get('district') or ''
+        uid = data.get('uid') or email
+
+        if not email or not password:
+            return jsonify({'success': False, 'error': 'Email and password are required'}), 400
+
+        password_hash = generate_password_hash(password)
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            INSERT INTO users (uid, email, password_hash, full_name, phone, state, district, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(email) DO UPDATE SET
+                password_hash = excluded.password_hash,
+                full_name = COALESCE(NULLIF(excluded.full_name, ''), users.full_name),
+                phone = COALESCE(NULLIF(excluded.phone, ''), users.phone),
+                state = COALESCE(NULLIF(excluded.state, ''), users.state),
+                district = COALESCE(NULLIF(excluded.district, ''), users.district),
+                updated_at = CURRENT_TIMESTAMP
+        ''', (uid, email, password_hash, full_name, phone, state, district))
+
+        conn.commit()
+        conn.close()
+
+        print(f"[OK] Registered/Updated backend user session: {email}")
+        return jsonify({
+            'success': True,
+            'message': 'User registered successfully in backend',
+            'user': {
+                'email': email,
+                'full_name': full_name,
+                'phone': phone,
+                'state': state,
+                'district': district,
+                'uid': uid
+            }
+        })
+    except Exception as e:
+        print(f"[ERROR] Register failed: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').strip().lower()
+        password = data.get('password') or ''
+
+        if not email or not password:
+            return jsonify({'success': False, 'error': 'Email and password are required'}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+        user_row = cursor.fetchone()
+        conn.close()
+
+        if not user_row:
+            return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
+
+        if not user_row['password_hash'] or not check_password_hash(user_row['password_hash'], password):
+            return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
+
+        print(f"[OK] Backend customer logged in: {email}")
+        return jsonify({
+            'success': True,
+            'user': {
+                'uid': user_row['uid'],
+                'email': user_row['email'],
+                'full_name': user_row['full_name'],
+                'phone': user_row['phone'],
+                'state': user_row['state'],
+                'district': user_row['district']
+            }
+        })
+    except Exception as e:
+        print(f"[ERROR] Login failed: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/auth/sync', methods=['POST'])
+def auth_sync():
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').strip().lower()
+        uid = data.get('uid') or email
+        full_name = data.get('full_name') or data.get('displayName') or ''
+        phone = data.get('phone') or data.get('phoneNumber') or ''
+        state = data.get('state') or ''
+        district = data.get('district') or ''
+
+        if not email:
+            return jsonify({'success': False, 'error': 'Email is required'}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            INSERT INTO users (uid, email, full_name, phone, state, district, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(email) DO UPDATE SET
+                uid = COALESCE(excluded.uid, users.uid),
+                full_name = COALESCE(NULLIF(excluded.full_name, ''), users.full_name),
+                phone = COALESCE(NULLIF(excluded.phone, ''), users.phone),
+                state = COALESCE(NULLIF(excluded.state, ''), users.state),
+                district = COALESCE(NULLIF(excluded.district, ''), users.district),
+                updated_at = CURRENT_TIMESTAMP
+        ''', (uid, email, full_name, phone, state, district))
+
+        conn.commit()
+
+        cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+        user_row = cursor.fetchone()
+        conn.close()
+
+        print(f"[OK] Synced user session to backend: {email}")
+        return jsonify({
+            'success': True,
+            'user': {
+                'uid': user_row['uid'],
+                'email': user_row['email'],
+                'full_name': user_row['full_name'],
+                'phone': user_row['phone'],
+                'state': user_row['state'],
+                'district': user_row['district']
+            }
+        })
+    except Exception as e:
+        print(f"[ERROR] Auth sync failed: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/auth/update-profile', methods=['POST'])
+def auth_update_profile():
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').strip().lower()
+
+        if not email:
+            return jsonify({'success': False, 'error': 'Email is required'}), 400
+
+        full_name = data.get('full_name')
+        phone = data.get('phone')
+        state = data.get('state')
+        district = data.get('district')
+        new_password = data.get('password')
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        if new_password:
+            password_hash = generate_password_hash(new_password)
+            cursor.execute('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', (password_hash, email))
+
+        if full_name is not None:
+            cursor.execute('UPDATE users SET full_name = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', (full_name, email))
+        if phone is not None:
+            cursor.execute('UPDATE users SET phone = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', (phone, email))
+        if state is not None:
+            cursor.execute('UPDATE users SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', (state, email))
+        if district is not None:
+            cursor.execute('UPDATE users SET district = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', (district, email))
+
+        conn.commit()
+
+        cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+        user_row = cursor.fetchone()
+        conn.close()
+
+        print(f"[OK] Updated user details in backend: {email}")
+        return jsonify({
+            'success': True,
+            'user': {
+                'uid': user_row['uid'],
+                'email': user_row['email'],
+                'full_name': user_row['full_name'],
+                'phone': user_row['phone'],
+                'state': user_row['state'],
+                'district': user_row['district']
+            }
+        })
+    except Exception as e:
+        print(f"[ERROR] Profile update failed: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0',
