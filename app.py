@@ -7,16 +7,21 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
 
-# ── Use TFLite runtime instead of full TensorFlow ─────────
+# ── Use LiteRT / TFLite runtime instead of full TensorFlow ─────────
 # TFLite = ~80MB RAM vs TensorFlow = ~450MB RAM
 try:
-    import tflite_runtime.interpreter as tflite
+    import ai_edge_litert.interpreter as tflite
     TFLITE_AVAILABLE = True
-    print("[OK] Using TFLite runtime (memory efficient)")
+    print("[OK] Using Google LiteRT runtime (memory efficient)")
 except ImportError:
-    import tensorflow as tf
-    TFLITE_AVAILABLE = False
-    print("[WARN] TFLite not found, falling back to TensorFlow")
+    try:
+        import tflite_runtime.interpreter as tflite
+        TFLITE_AVAILABLE = True
+        print("[OK] Using TFLite runtime (memory efficient)")
+    except ImportError:
+        import tensorflow as tf
+        TFLITE_AVAILABLE = False
+        print("[WARN] Neither LiteRT nor TFLite found, falling back to TensorFlow")
 
 app = Flask(__name__)
 CORS(app, origins=['*'])

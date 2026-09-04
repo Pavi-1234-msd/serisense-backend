@@ -4,4 +4,4 @@ numpy==1.26.4
 pillow==10.2.0
 gunicorn==21.2.0
 opencv-python-headless==4.9.0.80
-tflite-runtime==2.14.0
+ai-edge-litert
