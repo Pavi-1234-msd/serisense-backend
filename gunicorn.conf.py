@@ -1,13 +1,19 @@
 import os
 
-bind             = f"0.0.0.0:{os.environ.get('PORT', '5000')}"
-workers          = 1
-threads          = 1
-worker_class     = 'sync'
-timeout          = 300        # 5 minutes — enough for cold start + inference
-keepalive        = 5
-max_requests     = 20         # Restart worker every 20 requests to free memory
-max_requests_jitter = 3
-preload_app      = False
-graceful_timeout = 60
-worker_tmp_dir   = '/tmp'
+# Server socket configuration
+bind = "0.0.0.0:" + os.environ.get("PORT", "5000")
+
+# Single worker process to keep RAM under 512MB limit on Render free tier
+workers = int(os.environ.get("WEB_CONCURRENCY", 1))
+threads = int(os.environ.get("PYTHON_GET_WORKER_THREADS", 2))
+
+# Timeout settings
+timeout = 120
+keepalive = 5
+max_requests = 50
+max_requests_jitter = 5
+
+# Logging
+accesslog = "-"
+errorlog = "-"
+loglevel = "info"
