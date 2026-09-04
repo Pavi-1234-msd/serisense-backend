@@ -694,30 +694,43 @@ def auth_login():
         if not email or not password:
             return jsonify({'success': False, 'error': 'Email and password are required'}), 400
 
-        conn = get_db()
+        conn, db_type = get_db()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
-        user_row = cursor.fetchone()
-        conn.close()
 
-        if not user_row:
-            return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
+        if db_type == 'mysql':
+            cursor.execute('SELECT * FROM users WHERE email = %s', (email,))
+            user_row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            if not user_row:
+                return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
 
-        if not user_row['password_hash'] or not check_password_hash(user_row['password_hash'], password):
+            if isinstance(user_row, dict):
+                p_hash = user_row.get('password_hash')
+                u_data = user_row
+            else:
+                p_hash = user_row[3]
+                u_data = {
+                    'uid': user_row[1], 'email': user_row[2], 'full_name': user_row[4],
+                    'phone': user_row[5], 'state': user_row[6], 'district': user_row[7]
+                }
+        else:
+            cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+            user_row = cursor.fetchone()
+            conn.close()
+            if not user_row:
+                return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
+            p_hash = user_row['password_hash']
+            u_data = {
+                'uid': user_row['uid'], 'email': user_row['email'], 'full_name': user_row['full_name'],
+                'phone': user_row['phone'], 'state': user_row['state'], 'district': user_row['district']
+            }
+
+        if not p_hash or not check_password_hash(p_hash, password):
             return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
 
         print(f"[OK] Backend customer logged in: {email}")
-        return jsonify({
-            'success': True,
-            'user': {
-                'uid': user_row['uid'],
-                'email': user_row['email'],
-                'full_name': user_row['full_name'],
-                'phone': user_row['phone'],
-                'state': user_row['state'],
-                'district': user_row['district']
-            }
-        })
+        return jsonify({'success': True, 'user': u_data})
     except Exception as e:
         print(f"[ERROR] Login failed: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -740,39 +753,57 @@ def auth_sync():
         state = data.get('state') or ''
         district = data.get('district') or ''
 
-        conn = get_db()
+        conn, db_type = get_db()
         cursor = conn.cursor()
 
-        cursor.execute('''
-            INSERT INTO users (uid, email, full_name, phone, state, district, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(email) DO UPDATE SET
-                uid = COALESCE(excluded.uid, users.uid),
-                full_name = COALESCE(NULLIF(excluded.full_name, ''), users.full_name),
-                phone = COALESCE(NULLIF(excluded.phone, ''), users.phone),
-                state = COALESCE(NULLIF(excluded.state, ''), users.state),
-                district = COALESCE(NULLIF(excluded.district, ''), users.district),
-                updated_at = CURRENT_TIMESTAMP
-        ''', (uid, email, full_name, phone, state, district))
+        if db_type == 'mysql':
+            cursor.execute('''
+                INSERT INTO users (uid, email, full_name, phone, state, district)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    uid = COALESCE(VALUES(uid), uid),
+                    full_name = COALESCE(NULLIF(VALUES(full_name), ''), full_name),
+                    phone = COALESCE(NULLIF(VALUES(phone), ''), phone),
+                    state = COALESCE(NULLIF(VALUES(state), ''), state),
+                    district = COALESCE(NULLIF(VALUES(district), ''), district);
+            ''', (uid, email, full_name, phone, state, district))
+            conn.commit()
 
-        conn.commit()
+            cursor.execute('SELECT * FROM users WHERE email = %s', (email,))
+            user_row = cursor.fetchone()
+            cursor.close()
+            conn.close()
 
-        cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
-        user_row = cursor.fetchone()
-        conn.close()
+            if isinstance(user_row, dict):
+                u_data = user_row
+            elif user_row:
+                u_data = {'uid': user_row[1], 'email': user_row[2], 'full_name': user_row[4], 'phone': user_row[5], 'state': user_row[6], 'district': user_row[7]}
+            else:
+                u_data = {'uid': uid, 'email': email, 'full_name': full_name, 'phone': phone, 'state': state, 'district': district}
+        else:
+            cursor.execute('''
+                INSERT INTO users (uid, email, full_name, phone, state, district, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(email) DO UPDATE SET
+                    uid = COALESCE(excluded.uid, users.uid),
+                    full_name = COALESCE(NULLIF(excluded.full_name, ''), users.full_name),
+                    phone = COALESCE(NULLIF(excluded.phone, ''), users.phone),
+                    state = COALESCE(NULLIF(excluded.state, ''), users.state),
+                    district = COALESCE(NULLIF(excluded.district, ''), users.district),
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (uid, email, full_name, phone, state, district))
+            conn.commit()
+
+            cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+            user_row = cursor.fetchone()
+            conn.close()
+            u_data = {
+                'uid': user_row['uid'], 'email': user_row['email'], 'full_name': user_row['full_name'],
+                'phone': user_row['phone'], 'state': user_row['state'], 'district': user_row['district']
+            } if user_row else {'uid': uid, 'email': email, 'full_name': full_name}
 
         print(f"[OK] Synced user session to backend: {email}")
-        return jsonify({
-            'success': True,
-            'user': {
-                'uid': user_row['uid'],
-                'email': user_row['email'],
-                'full_name': user_row['full_name'],
-                'phone': user_row['phone'],
-                'state': user_row['state'],
-                'district': user_row['district']
-            }
-        })
+        return jsonify({'success': True, 'user': u_data})
     except Exception as e:
         print(f"[ERROR] Auth sync failed: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -792,40 +823,34 @@ def auth_update_profile():
         district = data.get('district')
         new_password = data.get('password')
 
-        conn = get_db()
+        conn, db_type = get_db()
         cursor = conn.cursor()
+
+        pholder = '%s' if db_type == 'mysql' else '?'
 
         if new_password:
             password_hash = generate_password_hash(new_password)
-            cursor.execute('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', (password_hash, email))
+            cursor.execute(f'UPDATE users SET password_hash = {pholder} WHERE email = {pholder}', (password_hash, email))
 
         if full_name is not None:
-            cursor.execute('UPDATE users SET full_name = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', (full_name, email))
+            cursor.execute(f'UPDATE users SET full_name = {pholder} WHERE email = {pholder}', (full_name, email))
         if phone is not None:
-            cursor.execute('UPDATE users SET phone = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', (phone, email))
+            cursor.execute(f'UPDATE users SET phone = {pholder} WHERE email = {pholder}', (phone, email))
         if state is not None:
-            cursor.execute('UPDATE users SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', (state, email))
+            cursor.execute(f'UPDATE users SET state = {pholder} WHERE email = {pholder}', (state, email))
         if district is not None:
-            cursor.execute('UPDATE users SET district = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', (district, email))
+            cursor.execute(f'UPDATE users SET district = {pholder} WHERE email = {pholder}', (district, email))
 
         conn.commit()
 
-        cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+        cursor.execute(f'SELECT * FROM users WHERE email = {pholder}', (email,))
         user_row = cursor.fetchone()
+        if db_type == 'mysql':
+            cursor.close()
         conn.close()
 
         print(f"[OK] Updated user details in backend: {email}")
-        return jsonify({
-            'success': True,
-            'user': {
-                'uid': user_row['uid'],
-                'email': user_row['email'],
-                'full_name': user_row['full_name'],
-                'phone': user_row['phone'],
-                'state': user_row['state'],
-                'district': user_row['district']
-            }
-        })
+        return jsonify({'success': True, 'message': 'Profile updated successfully'})
     except Exception as e:
         print(f"[ERROR] Profile update failed: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
