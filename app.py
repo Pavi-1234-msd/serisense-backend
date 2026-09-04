@@ -747,9 +747,72 @@ def auth_update_profile():
                 'district': user_row['district']
             }
         })
+@app.route('/users-view')
+def users_view_html():
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, uid, email, password_hash, full_name, phone, state, district, created_at FROM users ORDER BY id DESC')
+        users = cursor.fetchall()
+        conn.close()
+
+        rows_html = ""
+        for u in users:
+            rows_html += f"""
+            <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 12px; font-weight: bold;">{u['id']}</td>
+                <td style="padding: 12px; color: #2b6cb0; font-weight: 600;">{u['full_name'] or 'N/A'}</td>
+                <td style="padding: 12px;">{u['email']}</td>
+                <td style="padding: 12px;">{u['phone'] or 'N/A'}</td>
+                <td style="padding: 12px;">{u['state'] or 'N/A'}</td>
+                <td style="padding: 12px;">{u['district'] or 'N/A'}</td>
+                <td style="padding: 12px; font-size: 11px; color: #718096; max-width: 140px; word-break: break-all;">{u['password_hash'] or 'N/A'}</td>
+                <td style="padding: 12px; font-size: 12px; color: #4a5568;">{u['created_at']}</td>
+            </tr>
+            """
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>SeriSense Customer Database</title>
+            <style>
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f7fafc; margin: 0; padding: 30px; color: #2d3748; }}
+                .card {{ background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); padding: 24px; max-width: 1100px; margin: 0 auto; }}
+                h1 {{ color: #2b6cb0; margin-top: 0; display: flex; align-items: center; gap: 10px; }}
+                table {{ width: 100%; border-collapse: collapse; margin-top: 16px; text-align: left; }}
+                th {{ background: #edf2f7; padding: 12px; font-size: 13px; text-transform: uppercase; color: #4a5568; letter-spacing: 0.5px; }}
+                .badge {{ background: #c6f6d5; color: #22543d; padding: 4px 8px; border-radius: 9999px; font-size: 12px; font-weight: bold; }}
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h1>👥 SeriSense Customer Database <span class="badge">{len(users)} Total Customers</span></h1>
+                <p style="color: #718096;">Live view of customer login details stored in SQLite database (`users.db`).</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Full Name</th>
+                            <th>Email</th>
+                            <th>Phone</th>
+                            <th>State</th>
+                            <th>District</th>
+                            <th>Password Hash</th>
+                            <th>Registered At</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_html if rows_html else '<tr><td colspan="8" style="padding: 24px; text-align: center; color: #a0aec0;">No customers registered yet.</td></tr>'}
+                    </tbody>
+                </table>
+            </div>
+        </body>
+        </html>
+        """
+        return html
     except Exception as e:
-        print(f"[ERROR] Profile update failed: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return f"<h3>Error reading users table: {e}</h3>", 500
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0',
