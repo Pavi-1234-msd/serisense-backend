@@ -352,7 +352,7 @@ def run_inference(img_array):
 DB_PATH = os.path.join(os.path.dirname(__file__), 'users.db')
 MYSQL_HOST = os.environ.get('MYSQL_HOST', 'localhost')
 MYSQL_USER = os.environ.get('MYSQL_USER', 'root')
-MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD', '')
+MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD', 'Pavi@7423')
 MYSQL_DB = os.environ.get('MYSQL_DB', 'serisense_db')
 MYSQL_PORT = int(os.environ.get('MYSQL_PORT', 3306))
 
@@ -726,15 +726,19 @@ def auth_login():
 def auth_sync():
     try:
         data = request.get_json() or {}
+        uid = data.get('uid') or ''
         email = (data.get('email') or '').strip().lower()
-        uid = data.get('uid') or email
+
+        if not email and uid:
+            email = f"{uid}@serisense.user"
+
+        if not email and not uid:
+            return jsonify({'success': False, 'error': 'Email or User ID is required'}), 400
+
         full_name = data.get('full_name') or data.get('displayName') or ''
         phone = data.get('phone') or data.get('phoneNumber') or ''
         state = data.get('state') or ''
         district = data.get('district') or ''
-
-        if not email:
-            return jsonify({'success': False, 'error': 'Email is required'}), 400
 
         conn = get_db()
         cursor = conn.cursor()

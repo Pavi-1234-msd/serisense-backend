@@ -10,7 +10,8 @@ except ImportError:
     try:
         import pymysql
         pymysql.install_as_MySQLdb()
-        import MySQLdb as mysql.connector
+        import MySQLdb as mysql_connector
+        mysql = type('obj', (object,), {'connector': mysql_connector})
         driver = 'pymysql'
     except ImportError:
         print("[ERROR] Neither mysql-connector-python nor pymysql is installed.")
@@ -19,7 +20,7 @@ except ImportError:
 
 MYSQL_HOST = os.environ.get('MYSQL_HOST', 'localhost')
 MYSQL_USER = os.environ.get('MYSQL_USER', 'root')
-MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD', '')
+MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD', 'Pavi@7423')
 MYSQL_DB = os.environ.get('MYSQL_DB', 'serisense_db')
 MYSQL_PORT = int(os.environ.get('MYSQL_PORT', 3306))
 
@@ -88,7 +89,7 @@ def init_mysql():
         conn.close()
 
         print("\n=======================================================")
-        print("🎉 SUCCESS! MySQL Database setup complete.")
+        print("SUCCESS! MySQL Database setup complete.")
         print("You can now open MySQL Workbench, connect to localhost:3306,")
         print(f"open database `{MYSQL_DB}` and inspect table `users`!")
         print("=======================================================\n")
